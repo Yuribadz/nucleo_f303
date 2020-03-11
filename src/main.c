@@ -7,15 +7,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#define WELCOME_MSG "Welcome to the Nucleo management console\r\n"
-#define MAIN_MENU   "Select the option you are interested in:\r\n\t1. Toggle LD2 LED\r\n\t2. Read USER BUTTON status\r\n\t3. Clear screen and print this message "
-#define PROMPT "\r\n> "
-
 /* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef huart2;
-DMA_HandleTypeDef hdma_usart2_tx;
-char *msg = "Hello STM32 Lovers! This message is transferred in DMA Mode.\r\n";
-
+TIM_HandleTypeDef htim6;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -25,35 +19,33 @@ int main(void) {
     HAL_Init();
     SystemClock_Config();
     MX_GPIO_Init();
-    __HAL_RCC_DMA1_CLK_ENABLE();
     MX_USART2_UART_Init();
-    hdma_usart2_tx.Instance = DMA1_Channel7;
-    hdma_usart2_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
-    hdma_usart2_tx.Init.PeriphInc = DMA_PINC_DISABLE;
-    hdma_usart2_tx.Init.MemInc = DMA_MINC_ENABLE;
-    hdma_usart2_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-    hdma_usart2_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
-    hdma_usart2_tx.Init.Mode = DMA_NORMAL;
-    hdma_usart2_tx.Init.Priority = DMA_PRIORITY_LOW;
-    HAL_DMA_Init(&hdma_usart2_tx);
-
-    HAL_DMA_Start(&hdma_usart2_tx, (uint32_t) msg,
-            (uint32_t) &huart2.Instance->TDR, strlen(msg));
-    //Enable UART in DMA mode
-    huart2.Instance->CR3 |= USART_CR3_DMAT;
-    //Wait for transfer complete
-    HAL_DMA_PollForTransfer(&hdma_usart2_tx, HAL_DMA_FULL_TRANSFER,
-            HAL_MAX_DELAY);
-    //Disable UART DMA mode
-    huart2.Instance->CR3 &= ~USART_CR3_DMAT;
     //Turn LD2 ON
-    HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+    htim6.Instance = TIM6;
+    htim6.Init.Prescaler = 35999; // 72 Mhz/36000 = 2000 hz
+    htim6.Init.Period = 999;
+    __HAL_RCC_TIM6_CLK_ENABLE();
+    HAL_NVIC_SetPriority(TIM6_DAC1_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
 
+    HAL_TIM_Base_Init(&htim6);
+    HAL_TIM_Base_Start_IT(&htim6);
     while (1) {
         // Keep it spinning;
     }
 }
 
+void TIM6_DAC1_IRQHandler(void) {
+  HAL_TIM_IRQHandler(&htim6);
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if(htim->Instance == TIM6)
+    {
+        HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    }
+}
 /** System Clock Configuration
  */
 void SystemClock_Config(void) {
