@@ -1,6 +1,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "stm32f3xx_hal.h"
 #include "ringbuffer.h"
+#include "retarget.h"
 #include <string.h>
 #include "main.h"
 #include <stdlib.h>
@@ -12,127 +13,44 @@
 
 /* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef huart2;
-char readBuf[1];
-uint8_t txData;
-__IO ITStatus UartReady = SET;
-RingBuffer txBuf, rxBuf;
+DMA_HandleTypeDef hdma_usart2_tx;
+char *msg = "Hello STM32 Lovers! This message is transferred in DMA Mode.\r\n";
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
-void performCriticalTasks(void);
-void printWelcomeMessage(void);
-uint8_t processUserInput(int8_t opt);
-int8_t readUserInput(void);
 
 int main(void) {
-    uint8_t opt = 0;
-
-    /* Reset of all peripherals, Initializes the Flash interface and the SysTick. */
     HAL_Init();
-
-    /* Configure the system clock */
     SystemClock_Config();
-
-    /* Initialize all configured peripherals */
     MX_GPIO_Init();
+    __HAL_RCC_DMA1_CLK_ENABLE();
     MX_USART2_UART_Init();
+    hdma_usart2_tx.Instance = DMA1_Channel7;
+    hdma_usart2_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
+    hdma_usart2_tx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_usart2_tx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_usart2_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_usart2_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_usart2_tx.Init.Mode = DMA_NORMAL;
+    hdma_usart2_tx.Init.Priority = DMA_PRIORITY_LOW;
+    HAL_DMA_Init(&hdma_usart2_tx);
 
-    /* Enable USART2 interrupt */
-    HAL_NVIC_SetPriority(USART2_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(USART2_IRQn);
-
-    printMessage:
-
-    printWelcomeMessage();
+    HAL_DMA_Start(&hdma_usart2_tx, (uint32_t) msg,
+            (uint32_t) &huart2.Instance->TDR, strlen(msg));
+    //Enable UART in DMA mode
+    huart2.Instance->CR3 |= USART_CR3_DMAT;
+    //Wait for transfer complete
+    HAL_DMA_PollForTransfer(&hdma_usart2_tx, HAL_DMA_FULL_TRANSFER,
+            HAL_MAX_DELAY);
+    //Disable UART DMA mode
+    huart2.Instance->CR3 &= ~USART_CR3_DMAT;
+    //Turn LD2 ON
+    HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
 
     while (1) {
-        opt = readUserInput();
-        if (opt > 0) {
-            processUserInput(opt);
-            if (opt == 3)
-                goto printMessage;
-        }
-        performCriticalTasks();
-    }
-}
-
-uint8_t UART_Transmit(UART_HandleTypeDef *huart, uint8_t *pData, uint16_t len) {
-    if (HAL_UART_Transmit_IT(huart, pData, len) != HAL_OK) {
-        if (RingBuffer_Write(&txBuf, pData, len) != RING_BUFFER_OK)
-            return 0;
-    }
-    return 1;
-}
-
-int8_t readUserInput(void) {
-    int8_t retVal = -1;
-
-    if (UartReady == SET) {
-        UartReady = RESET;
-        retVal = atoi(readBuf);
-        HAL_UART_Receive_IT(&huart2, (uint8_t*) readBuf, 1);
-    }
-    return retVal;
-}
-
-uint8_t processUserInput(int8_t opt) {
-    char msg[30];
-
-    if (!(opt >= 1 && opt <= 3))
-        return 0;
-
-    sprintf(msg, "%d", opt);
-    UART_Transmit(&huart2, (uint8_t*) msg, strlen(msg));
-
-    switch (opt) {
-    case 1:
-        HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-        break;
-    case 2:
-        sprintf(msg, "\r\nUSER BUTTON status: %s",
-                HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_RESET ?
-                        "PRESSED" : "RELEASED");
-        UART_Transmit(&huart2, (uint8_t*) msg, strlen(msg));
-        break;
-    case 3:
-        return 2;
-    };
-
-    UART_Transmit(&huart2, (uint8_t*) PROMPT, strlen(PROMPT));
-    return 1;
-}
-
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *UartHandle) {
-    /* Set transmission flag: transfer complete*/
-    UartReady = SET;
-}
-
-void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
-    if (RingBuffer_GetDataLength(&txBuf) > 0) {
-        RingBuffer_Read(&txBuf, &txData, 1);
-        HAL_UART_Transmit_IT(huart, &txData, 1);
-    }
-}
-
-void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
-    if (huart->ErrorCode == HAL_UART_ERROR_ORE)
-        HAL_UART_Receive_IT(huart, (uint8_t*) readBuf, 1);
-}
-
-void performCriticalTasks(void) {
-    HAL_Delay(100);
-}
-
-void printWelcomeMessage(void) {
-    char *strings[] = { "\033[0;0H", "\033[2J", WELCOME_MSG, MAIN_MENU, PROMPT };
-
-    for (uint8_t i = 0; i < 5; i++) {
-        UART_Transmit(&huart2, (uint8_t*) strings[i], strlen(strings[i]));
-        while (HAL_UART_GetState(&huart2) == HAL_UART_STATE_BUSY_TX
-                || HAL_UART_GetState(&huart2) == HAL_UART_STATE_BUSY_TX_RX)
-            ;
+        // Keep it spinning;
     }
 }
 
